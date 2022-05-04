@@ -1,0 +1,98 @@
+#Creating policy for describing ec2 attributes
+resource "aws_iam_policy" "ec2_desribe" {
+  name = "lambda_ec2_describe"
+
+  policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "ec2:Describe*",
+            "Resource": "*"
+        }
+    ]
+})
+}
+
+#Creating policy for providing specific bucket put s3 permission for inventory file
+resource "aws_iam_policy" "s3_put" {
+  name = "lambda_s3_specific"
+
+  policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "VisualEditor0",
+            "Effect": "Allow",
+            "Action": "s3:PutObject",
+            "Resource": "arn:aws:s3:::ec2-alerted-instances-inventory/*"
+        }
+    ]
+})
+}
+
+#Creating poliy for publishing sns
+resource "aws_iam_policy" "sns_publish" {
+  name = "lambda_sns_publish"
+
+  policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "sns:Publish",
+            "Resource": "arn:aws:sns:XXX:XXXXXXXXX:sns_mail"
+        }
+    ]
+})
+}
+
+#Creating role for lambda with above policies
+resource "aws_iam_role" "lambda_ec2_role" {
+  name                = "lambda_role"
+  assume_role_policy  = jsonencode({"Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "lambda.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+        }
+    ]
+})
+
+  managed_policy_arns = [aws_iam_policy.ec2_desribe.arn, aws_iam_policy.s3_put.arn, aws_iam_policy.sns_publish.arn]
+}
+
+#Creating Lambda Function
+resource "aws_lambda_function" "ec2_inventory_lambda" {
+        function_name = "ec2_inventory"
+        filename      = "Lambda_Inventory.zip"
+        role          = aws_iam_role.lambda_ec2_role.arn
+        runtime       = "python3.6"
+        handler       = "lambda_function.lambda_handler"
+        timeout       = 60
+}
+
+#Creating Cloudwatch event rule with scheduled event
+resource "aws_cloudwatch_event_rule" "cw-event-lambda" {
+  name                  = "trigger-ec2-lambda-function"
+  schedule_expression   = "rate(12 hours)"
+}
+
+#Registering lambda function as target
+resource "aws_cloudwatch_event_target" "ec2_inventory_lambda-target" {
+  target_id = "ec2_inventory_lambda"
+  rule      = aws_cloudwatch_event_rule.cw-event-lambda.name
+  arn       = aws_lambda_function.ec2_inventory_lambda.arn
+}
+
+#Providing permission in lambda to get invoked by cloudwatch
+resource "aws_lambda_permission" "allow_cloudwatch" {
+    statement_id = "AllowExecutionFromCloudWatch"
+    action = "lambda:InvokeFunction"
+    function_name = aws_lambda_function.ec2_inventory_lambda.function_name
+    principal = "events.amazonaws.com"
+    source_arn = aws_cloudwatch_event_rule.cw-event-lambda.arn
+}

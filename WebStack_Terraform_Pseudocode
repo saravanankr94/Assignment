@@ -1,0 +1,395 @@
+#provider
+
+provider "aws" {
+  region  = "us-west-2"
+}
+
+#VPC creation
+resource "aws-vpc" "my-vpc"{
+cidr = "10.0.0.0/22"
+tags = {
+    Name = "Main VPC"
+  }
+}
+
+#public subnet[1]
+resource "aws-subnet" "public-1" {
+  vpc-id     = aws-vpc.my-vpc.id
+  cidr-block = "10.0.1.0/25"
+  availability-zone = "us-west-2a"
+
+  tags = {
+    Name = "public-subnet-1"
+  }
+}
+
+#public subnet[2]
+resource "aws-subnet" "public-2" {
+  vpc-id     = aws-vpc.my-vpc.id
+  cidr-block = "10.0.2.0/25"
+  availability-zone = "us-west-2b"
+
+  tags = {
+    Name = "public-subnet-2"
+  }
+}
+
+#private subnet[1]
+resource "aws-subnet" "private-1" {
+  vpc-id     = aws-vpc.my-vpc.id
+  cidr-block = "10.0.3.63/26"
+  availability-zone = "us-west-2a"
+
+  tags = {
+    Name = "private-subnet-1"
+  }
+}
+
+#private subnet[2]
+resource "aws-subnet" "private-2" {
+  vpc-id     = aws-vpc.my-vpc.id
+  cidr-block = "10.0.3.64/26"
+  availability-zone = "us-west-2b"
+
+  tags = {
+    Name = "private-subnet-2"
+  }
+}
+
+#internet-gateway creation for VPC
+
+resource "aws-internet-gateway" "main-igw" {
+  vpc-id = aws-vpc.my-vpc.id
+
+  tags = {
+    Name = "Main IGW"
+  }
+}
+
+#route table creation
+resource "aws-route-table" "public-rt" {
+  vpc-id = aws-vpc.my-vpc.id
+
+
+  route {
+    cidr-block = "0.0.0.0/0"
+    gateway-id = aws-internet-gateway.igw.id
+  }
+
+  tags = {
+    Name = "Public route table"
+  }
+}
+
+#Associating public subnets to public route table
+resource "aws-route-table-association" "public-a" {
+  subnet-id      = aws-subnet.public-1.id
+  route-table-id = aws-route-table.public-rt.id
+}
+
+resource "aws-route-table-association" "public-b" {
+  subnet-id      = aws-subnet.public-2.id
+  route-table-id = aws-route-table.public-rt.id
+}
+
+
+#creating elastic ip for NAT gateway
+resource "aws_eip" "nat_eip" {
+  vpc = true
+
+  tags = {
+    Name = "Nat Gateway IP"
+  }
+}
+
+
+#creating NAT gateway
+resource "aws_nat_gateway" "main-ngw" {
+  allocation_id = aws_eip.nat_eip.id
+  subnet_id     = aws_subnet.public-1.id
+
+  tags = {
+    Name = "NAT gateway"
+  }
+
+  depends_on = [aws_internet_gateway.main-igw]
+}
+
+#creating private route table
+resource "aws_route_table" "private-rt" {
+  vpc_id = "${aws_vpc.default.id}"
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = "${aws_nat_gateway.main-ngw.id}"
+  }
+
+  tags {
+    Name = "Private route table"
+  }
+}
+
+#Associating private subnets to private route table
+resource "aws-route-table-association" "private-a" {
+  subnet-id      = aws-subnet.private-1.id
+  route-table-id = aws-route-table.private-rt.id
+}
+
+resource "aws-route-table-association" "private-b" {
+  subnet-id      = aws-subnet.private-2.id
+  route-table-id = aws-route-table.private-rt.id
+}
+
+#Security group for launch configurtaion of Web servers
+resource "aws_security_group" "allow_http" {
+  name        = "allow_http"
+  description = "Allow HTTP inbound connections from loadbalancer"
+  vpc_id = aws_vpc.my_vpc.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+  
+  egress {
+    from_port       = 0
+    to_port         = 0
+    protocol        = "-1"
+    cidr_blocks     = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Allow HTTP Security Group"
+	
+  depends_on = [aws_security_group.alb_sg]
+  }
+
+#Getting CentOS latest image
+data "aws_ami" "centos" {
+owners      = ["679593333241"]
+most_recent = true
+
+  filter {
+      name   = "name"
+      values = ["CentOS Linux 7 x86_64 HVM EBS *"]
+  }
+
+  filter {
+      name   = "root-device-type"
+      values = ["ebs"]
+  }
+}
+
+#Creating launch configurtaion for Autoscaling 
+resource "aws_launch_configuration" "web" {
+  name_prefix = "web"
+  image_id = data.aws_ami.centos.id
+  instance_type = "t2.micro"
+  key_name = ssh_keypair
+
+  security_groups = [ aws_security_group.allow_http.id ]
+
+  user_data = file (install.sh)
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+
+#Creating Security group for Loadbalancer 
+resource "aws_security_group" "alb_sg" {
+  name        = "alb_https"
+  vpc_id = aws_vpc.my_vpc.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port       = 0
+    to_port         = 0
+    protocol        = "-1"
+    cidr_blocks     = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Allow HTTPS Security Group"
+  }
+}
+
+#Creating loadbalancer 
+resource "aws_lb" "alb" {  
+  name            = "alb"  
+  subnets = [
+    aws_subnet.public-1.id,
+    aws_subnet.public-2.id
+  ]  
+  security_groups = ["${aws_security_group.alb_sg.id}"]
+  internal        = false 
+  tags {    
+    Name    = "alb"    
+  }   
+}
+
+#creating target-group
+resource "aws_lb_target_group" "alb_target_group" {  
+  name     = "alb-target-group"  
+  port     = "80"  
+  protocol = "HTTP"  
+  vpc_id   = "${aws_vpc.my-vpc.id}"   
+  tags {    
+    name = "alb_target_group"    
+  }   
+    health_check {    
+    healthy_threshold   = 3    
+    unhealthy_threshold = 10    
+    timeout             = 5    
+    interval            = 10    
+    path                = "/"    
+    port                = 80
+  }
+}
+
+#Creating listner with SSL 
+resource "aws_lb_listener" "alb_listener_https" {  
+  load_balancer_arn = "${aws_lb.alb.arn}"  
+  port              = 443 
+  protocol          = "https"
+  certificate_arn   = "arn:aws:iam::XXXX"
+
+  
+  default_action {    
+    target_group_arn = "${aws_lb_target_group.alb_target_group.arn}"
+    type             = "forward"  
+  }
+}
+
+#Creating ASG with reference to the Loadbalancer
+resource "aws_autoscaling_group" "web" {
+  name = "${aws_launch_configuration.web.name}-asg"
+
+  min_size             = 2
+  desired_capacity     = 2
+  max_size             = 2
+  
+  health_check_type    = "ELB"
+  load_balancers = [
+    aws_elb.alb.id
+  ]
+
+  launch_configuration = aws_launch_configuration.web.name
+
+  vpc_zone_identifier  = [
+    aws_subnet.public-1.id,
+    aws_subnet.public-2.id
+  ]
+}
+
+resource "aws_autoscaling_attachment" "alb_autoscale" {
+  alb_target_group_arn   = "${aws_lb_target_group.alb_target_group.arn}"
+  autoscaling_group_name = "${aws_autoscaling_group.web.id}"
+}
+
+# Database security group
+
+resource "aws_security_group" "database-sg" {
+  name        = "Database-SG"
+  description = "Allow inbound traffic from web sg"
+  vpc_id      = aws_vpc.my-vpc.id
+
+  ingress {
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.allow_http.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = -1
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Database-SG"
+  }
+}
+
+#Creating rds subnetgroup
+resource "aws_db_subnet_group" "rds_subnetgroup" {
+  name       = "rds_subnetgroup"
+  subnet_ids = [aws_subnet.private-1.id, aws_subnet.private-2.id]
+
+  tags = {
+    Name = "DB subnet group"
+  }
+  
+#Creating database instance
+resource "aws_db_instance" "main_rds" {
+  allocated_storage      = 10
+  db_subnet_group_name   = aws_db_subnet_group.rds_subnetgroup.id
+  engine                 = "mysql"
+  engine_version         = "8.0.20"
+  instance_class         = "db.t2.micro"
+  multi_az               = true
+  name                   = "mydb"
+  username               = "username"
+  password               = "password"
+  vpc_security_group_ids = [aws_security_group.database-sg.id]
+
+}
+
+# redis security group
+resource "aws_security_group" "redis-sg" {
+  name        = "Database-SG"
+  description = "Allow inbound traffic from web sg"
+  vpc_id      = aws_vpc.my-vpc.id
+
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.allow_http.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = -1
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Redis-SG"
+  }
+}
+
+#Creating redis subnetgroup
+resource "aws_elasticache_subnet_group" "redis_subnetgroup" {
+  name       = "redis_subnetgroup"
+  subnet_ids = [aws_subnet.private-1.id, aws_subnet.private-2.id]
+
+  tags = {
+    Name = "Redis subnet group"
+  }
+  
+#Creating Redis instance
+resource "aws_elasticache_cluster" "main-redis" {
+  cluster_id           = "redis-cluster"
+  engine               = "redis"
+  node_type            = "cache.m4.large"
+  num_cache_nodes      = 1
+  parameter_group_name = "default.redis3.2"
+  engine_version       = "3.2.10"
+  port                 = 6379
+  security_group_ids = [aws_security_group.redis-sg.id]
+
+}
+
+

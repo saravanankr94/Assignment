@@ -1,0 +1,59 @@
+IAM Permissions for Lambda Execution:
+
+	
+Customer Managed:
+  - lambda_ec2_describe:
+  
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "ec2:Describe*",
+            "Resource": "*"
+        }
+    ]
+}
+
+  - lambda_s3_specific:
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "VisualEditor0",
+            "Effect": "Allow",
+            "Action": "s3:PutObject",
+            "Resource": "arn:aws:s3:::ec2-alerted-instances-inventory/*"
+        }
+    ]
+}
+
+
+  - lambda_sns_publish:
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "sns:Publish",
+            "Resource": "arn:aws:sns:XXX:XXXXXXXXX:sns_mail"
+        }
+    ]
+}
+
+
+-------------------------------------------------------------------------------
+
+Triggers: [Twice/day]
+Cloudwatch
+ - Lambda function can be triggered via Cloudwatch 
+ - Cloudwatch -> Events -> Rules -> Create rule
+Configuration:
+ - Scheduled event -> fixed rate of 12hrs or with cron entry
+ - Add Target -> Lambda function name
+
+-------------------------------------------------------------------------------
+
+
+ 
